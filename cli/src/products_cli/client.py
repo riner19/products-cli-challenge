@@ -27,7 +27,7 @@ def _refresh(base_url: str, refresh_token: str) -> str:
     )
     if resp.status_code !=200:
         raise ApiError(
-            "Token refresh failed"
+            "Token refresh failed - run 'products-cli logint' again"
             f"({resp.status_code})"
         )
 
