@@ -1,208 +1,154 @@
-# Products CLI — Assignment
+# Products CLI
 
-Build a command-line tool that talks to the Products API in [`../server`](../server).
-This folder (`cli/`) is where you implement your solution. You are free to
-**modify the server too** if your approach calls for it — just explain what you
-changed and why.
+A command-line client for the Products API. Authenticates once, persists the
+token pair to disk, and transparently refreshes it when the access token's
+budget runs out.
 
-> **Unfamiliar with a term** (API, endpoint, access/refresh token, stdout, ...)?
-> See the plain-English glossary in the [top-level README](../README.md#key-concepts--terminology).
-> It's fine to learn as you go and use AI assistants — but don't use them blindly:
-> we may discuss your solution in a technical interview, so make sure you fully
-> understand it and the trade-offs of your approach.
+## Install & run
 
-> **⚠️ Your submission is checked by an automated validator.** It runs your CLI
-> and asserts specific acceptance criteria against the contract declared in this
-> README: the exact command names, options, JSON output shapes, exit codes, and
-> the auth/refresh behaviour described below. **Follow the declared API to the
-> letter** — deviations (different command names, extra prompts on stdout,
-> wrapped or reformatted JSON, non-zero exits on success) will fail the checks.
-> Where this README does **not** explicitly specify something, you are free to
-> come up with your own solution — use your judgement and be ready to explain your choices.
+The server must be running first (from the repository root):
 
-## How to approach this (suggested order)
+```bash
+docker compose up
+```
 
-1. **Run the server** (below) and open `http://localhost:8000/docs` — this is an
-   interactive page where you can try every endpoint in the browser. Click
-   `POST /auth/login`, "Try it out", log in with `demo` / `password123`, and
-   see the tokens you get back.
-2. **Get `login` working** in the CLI: call `/auth/login`, save the returned
-   tokens (and the base URL) to a file on disk.
-3. **Get `products list` working**: read the saved token, send it in the
-   `Authorization: Bearer <token>` header, print the JSON response.
-4. **Add the refresh flow**: when a request comes back `401`, call
-   `/auth/refresh`, save the new tokens, and retry. (See the walkthrough below.)
-5. **Add filters, `get`, `update`, and `batch-update`.**
+> The server listens on `http://localhost:8000`. If that port is taken on your
+> machine, change the host-side port mapping in `docker-compose.yml` and pass
+> the matching `--base-url` at login.
 
-> Start simple and get one command fully working before moving on.
-
-## Getting started (uv)
-
-This project is managed with [uv](https://docs.astral.sh/uv/).
+Then, from this folder:
 
 ```bash
 cd cli
-uv sync            # create the virtualenv and install dependencies
+uv sync
 uv run products-cli --help
 ```
 
-Add dependencies as you need them, e.g. `uv add typer` or `uv add rich`.
-An HTTP client (`httpx`) is already included. The CLI entry point is `main()` in
-[`src/products_cli/__init__.py`](src/products_cli/__init__.py), exposed as the
-`products-cli` command.
+## Usage
 
-## Run the server first
-
-From the repository root:
+Authenticate first — this is the only command that takes `--base-url`, and it is
+required. The URL is stored alongside the tokens so later commands reuse it:
 
 ```bash
-docker compose up --build
-# or
-cd server && uv run uvicorn app.main:app --port 8000
+uv run products-cli login --base-url http://localhost:8000 --username demo --password password123
+# {"status": "ok"}
 ```
 
-API base URL: `http://localhost:8000` · Interactive docs: `/docs` ·
-Demo user: `demo` / `password123`.
+### Listing and filtering
 
-## Required API
-
-Your CLI consumes the following endpoints. Authenticated requests use the header
-`Authorization: Bearer <access_token>`.
-
-### Auth
-
-| Method | Path            | Body                        | Response                                   |
-|--------|-----------------|-----------------------------|--------------------------------------------|
-| POST   | `/auth/login`   | `{username, password}`      | `{access_token, refresh_token, token_type}`|
-| POST   | `/auth/refresh` | `{refresh_token}`           | `{access_token, refresh_token, token_type}`|
-
-**Token refresh — important.** An access token is only valid for a limited number
-of authenticated requests (20) **and** a limited lifetime (60 seconds by default).
-When either is exceeded the API returns **HTTP 401**. When this
-happens your CLI must use the stored refresh token to obtain a new token pair via
-`/auth/refresh`, then transparently retry the request. Refresh tokens are rotated,
-so always persist the newest pair. Because each CLI invocation is a separate
-process, you must **persist tokens to disk** between commands.
-
-> Every authenticated response also carries `X-Token-Requests-Used`,
-> `X-Token-Requests-Limit`, and `X-Token-Expires-At` headers describing the
-> token's remaining budget — handy if you want to refresh before hitting a 401.
-
-In plain steps, every authenticated command should:
-
-1. Read the saved access token from disk and send it in the
-   `Authorization: Bearer <access_token>` header.
-2. If the response is **not** `401`, use it as normal.
-3. If it **is** `401`, POST the saved refresh token to `/auth/refresh` to get a
-   new `{access_token, refresh_token}` pair, **save both to disk**, and retry the
-   original request once with the new access token.
-
-> "Transparently" means the user never sees this happen — they just run the command
-> and it works, even on the 21st call.
-
-### Products
-
-| Method | Path               | Purpose                                       |
-|--------|--------------------|-----------------------------------------------|
-| GET    | `/products`        | list products (query filters below)           |
-| GET    | `/products/{id}`   | get one product                               |
-| POST   | `/products`        | create a product                              |
-| PATCH  | `/products/{id}`   | update fields of one product                  |
-| DELETE | `/products/{id}`   | delete a product                              |
-
-A product has: `id, name, section, description, discount, price`.
-
-`GET /products` query parameters: `section`, `name` (case-insensitive substring),
-`min_price`, `max_price`, `has_discount` (bool), `limit`, `offset`.
-
-> **Response shape:** `GET /products` returns a paginated envelope, not a bare
-> array: `{"items": [...], "pagination": {"limit", "offset", "count", "total"}}`.
-> Your `products list` command should still print the products (extract `items`).
-
-> **Note:** there is intentionally **no bulk/batch endpoint**. The `batch-update`
-> CLI command still has to work — decide how to implement it (e.g. fetch the
-> matching products and update them one by one, or add your own endpoint to the
-> server). Explain your choice.
-
-## Required CLI commands
-
-Implement at least the following. Data commands should print **valid JSON** to
-stdout and exit `0` on success; on error, print a message to stderr and exit
-non-zero.
-
-The **API base URL is provided at authentication time** via a required
-`--base-url` option on `login`. Persist it alongside the tokens so subsequent
-commands reuse it without passing it again.
-
-```
-products-cli login --base-url <url> --username <u> --password <p>
-    Authenticate against the given API URL and store the base URL + token pair.
-    --base-url is required. Prints {"status": "ok"}.
-
-products-cli products list [--section S] [--name TEXT] [--min-price N]
-                           [--max-price N] [--has-discount | --no-discount]
-                           [--limit N] [--offset N]
-    Prints a JSON array of products. Uses the stored base URL.
-
-products-cli products get --id <id>
-    Prints a single product as JSON.
-
-products-cli products update --id <id> [--name ...] [--section ...]
-                             [--description ...] [--discount N] [--price N]
-    Updates the given fields; prints the updated product as JSON.
-
-products-cli products create --name <name> --section <section> --price <N>
-                             [--description ...] [--discount N]
-    Creates a product; prints the created product as JSON.
-
-products-cli products delete --id <id>
-    Deletes the given product. Prints {"status": "ok"}.
-
-products-cli products batch-update --section <section> --discount <N>
-    Sets discount for every product in the section (there is no batch endpoint
-    — you choose how). Prints {"updated": <count>}.
+```bash
+uv run products-cli products list
+uv run products-cli products list --section electronics --limit 5
+uv run products-cli products list --min-price 20 --max-price 100
+uv run products-cli products list --name mouse
+uv run products-cli products list --has-discount
+uv run products-cli products list --no-discount
 ```
 
-The `products *` commands must **not** require `--base-url`; they read it from
-what `login` stored. (You may accept an optional `--base-url` override if you
-like.)
+`GET /products` returns a paginated envelope; the CLI extracts `items` and
+prints a bare JSON array, as specified.
 
-## Constraints & expectations
+### Single-product operations
 
-- Language: **Python**, managed with **uv**.
-- Handle the token-refresh flow: a run that makes more than 20 authenticated
-  requests must still succeed.
-- Support the listed `list` filters.
-- Implement `batch-update` however you see fit — the server has no batch endpoint,
-  so either update matching products individually or add your own endpoint.
-- Keep tokens out of version control (store the base URL and tokens under the
-  user's home or a git-ignored path).
-- You may modify the server; if you do, note what and why.
-- Update this README with any run instructions specific to your implementation.
+```bash
+uv run products-cli products get --id 1
+uv run products-cli products create --name "Desk Lamp" --section home --price 39.99
+uv run products-cli products update --id 1 --discount 15
+uv run products-cli products delete --id 1
+```
 
-## Evaluation criteria
+`update` sends only the fields you pass, so unspecified fields are left
+untouched by the `PATCH`.
 
-Part of the evaluation is **automated**: a validator exercises your CLI and
-checks the acceptance criteria implied by the declared API above (command names,
-options, JSON shapes, exit codes, refresh-on-401). Anything not explicitly
-declared here is up to you — pick a reasonable approach and explain it.
+### Batch update
 
-| Area                    | What we look for                                            |
-|-------------------------|------------------------------------------------------------|
-| Correctness             | Commands behave as specified; JSON output is valid.        |
-| Auth & refresh handling | Tokens persisted; automatic refresh + retry on 401.        |
-| Filtering               | `list` filters map correctly to API query params.          |
-| Batch update            | `batch-update` works; approach is sound and explained.     |
-| Code quality            | Clear structure, error handling, readable code.            |
-| Docs                    | README lets us install and run without guesswork.          |
+```bash
+uv run products-cli products batch-update --section electronics --discount 25
+# {"updated": 5}
+```
 
-## Suggested time budget
+## Output contract
 
-The **coding itself** is meant to take **around 3 hours** — it's intentionally
-small, so don't overcomplicate it. **Time spent learning and setting up doesn't
-count** and won't be held against you: if uv, HTTP APIs, or the auth/refresh flow
-are new to you, take the time you need to read the docs and get comfortable. We
-care about the result and your reasoning, not the clock.
+- Successful data commands print valid JSON to **stdout** and exit `0`.
+- Errors print a message to **stderr** and exit non-zero; stdout stays empty so
+  the output is always safe to pipe into `jq`.
 
-If you're short on time, prioritise `login`, `products list` (with filters), and
-the refresh flow.
+## Code structure
+
+| File | Responsibility |
+|------|----------------|
+| `src/products_cli/config.py` | Reads and writes the credentials file |
+| `src/products_cli/client.py` | HTTP layer: login, refresh, authenticated requests |
+| `src/products_cli/__init__.py` | Typer commands — argument parsing and JSON output |
+
+Every command goes through a single `client.request()` helper, so the
+refresh-on-401 logic is written once and applies everywhere automatically.
+
+## Where tokens are stored
+
+`~/.products-cli/config.json`, created with mode `0600` (owner read/write only).
+Keeping it outside the repository means tokens can't be committed by accident.
+The path can be overridden with the `PRODUCTS_CLI_CONFIG` environment variable,
+which is useful for testing against several servers.
+
+## Token refresh
+
+An access token expires after 20 authenticated requests or 60 seconds,
+whichever comes first. `client.request()` handles this without the user noticing:
+
+1. Send the request with the stored access token.
+2. If the response is `401`, POST the stored refresh token to `/auth/refresh`.
+3. Persist **both** new tokens — refresh tokens are rotated, so keeping the old
+   refresh token would break the next refresh.
+4. Retry the original request once with the new access token.
+
+The retry happens only once. If a request still fails after a successful
+refresh, something is genuinely wrong (revoked credentials, a server restart
+that cleared its in-memory token state) and retrying in a loop would only hide
+the problem. In that case the CLI exits non-zero and tells the user to log in
+again.
+
+## Batch update: approach and trade-offs
+
+The server has no bulk endpoint, so `batch-update` runs client-side: it lists
+the products in the section, then issues one `PATCH` per product and reports how
+many were updated.
+
+**Why not add a server endpoint?** Adding `POST /products/batch` would be faster
+— a single round trip, and the writes could share one transaction. I chose the
+client-side approach because in practice the API is often owned by another team
+and can't be changed to suit one consumer, so a client that works against the
+API as published is the more realistic deliverable. If this were a real
+recurring workload, a server-side bulk endpoint would be the right fix, and I'd
+raise it with whoever owns the service.
+
+**Pagination.** The listing step pages through the results using the `total`
+value in the envelope rather than assuming everything fits in one page, so
+sections larger than the default page size are handled correctly.
+
+**Known limitation — the writes are sequential.** Each mutation is published to
+a downstream event bus before the response returns, which costs roughly 430 ms
+per write. On a four-product section `time` reports 1.8s wall clock against
+0.14s of CPU, so over 90% of the run is spent waiting on the network; a full
+15-product section takes about 6.5 seconds.
+
+Issuing the `PATCH` requests concurrently would cut this to roughly the latency
+of a single write. The complication is the interaction with token refresh: with
+several requests in flight, more than one can receive a `401` at the same time,
+and because refresh tokens are rotated, the first refresh invalidates the token
+the others are holding. Doing this correctly needs a lock around the refresh so
+that one caller performs it while the rest wait and then pick up the new token.
+
+I kept the sequential version because it is correct and easy to follow, and the
+assignment asks for a small, clean solution. The concurrent version is the
+obvious next step if throughput mattered.
+
+**Refreshing pre-emptively.** Every authenticated response carries
+`X-Token-Requests-Used` and `X-Token-Expires-At`. A client could watch those and
+refresh just before the budget runs out, avoiding the wasted 401 round trip
+entirely. Reacting to the 401 is simpler and still correct, so that's what this
+implementation does — but the headers make the smarter approach available.
+
+## Server changes
+
+None. The server is used exactly as provided.
